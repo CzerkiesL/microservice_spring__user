@@ -1,0 +1,129 @@
+name: user-microservice
+
+services:
+    ms-user:
+        build:
+            context: .
+            dockerfile: ./Dockerfile
+        env_file:
+            - ./.env
+        container_name: ${MS_USER_CONTAINER_NAME}
+        ports:
+            - 127.0.0.1:${MS_USER_PORT}:${MS_USER_PORT}
+        environment:
+            # RabbitMQ
+            SPRING_RABBITMQ_HOST: ${RABBITMQ_CONTAINER_NAME}
+            SPRING_RABBITMQ_PORT: ${RABBITMQ_AMQP_PORT}
+            SPRING_RABBITMQ_USERNAME: ${RABBITMQ_USERNAME}
+            SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+            # Base de données
+            SPRING_DATASOURCE_URL: jdbc:mariadb://ms-user-db:3306/${SPRING_DATASOURCE_DB_NAME}?createDatabaseIfNotExist=true
+            SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME}
+            SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD}
+            # MinIO
+            MINIO_INTERNAL_ENDPOINT: http://${MINIO_CONTAINER_NAME}:${MINIO_API_PORT}
+            MINIO_EXTERNAL_ENDPOINT:  http://host.docker.internal:${MINIO_API_PORT}
+            MINIO_BUCKET_NAME: ${MINIO_BUCKET_NAME}
+            MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+            MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+        healthcheck:
+            test: ["CMD", "wget", "--spider", "-q", "http://localhost:${MS_USER_PORT}/actuator/health"]
+            interval: 10s
+            timeout: 5s
+            retries: 10
+            start_period: 30s
+        restart: unless-stopped
+        networks:
+            - ms-network
+        depends_on:
+            ms-user-db:
+                condition: service_healthy
+            minio:
+                condition: service_started
+
+    ms-user-db:
+        image: mariadb:11
+        env_file: 
+            - ./.env
+        container_name: ${MS_USER_DB_CONTAINER_NAME}
+        ports:
+            - 127.0.0.1:${SPRING_DATASOURCE_PORT}:3306
+        environment:
+            MARIADB_ROOT_PASSWORD: ${SPRING_DATASOURCE_ROOT_PASSWORD}
+            MARIADB_DATABASE: ${SPRING_DATASOURCE_DB_NAME}
+            MARIADB_USER: ${SPRING_DATASOURCE_USERNAME}
+            MARIADB_PASSWORD: ${SPRING_DATASOURCE_PASSWORD}
+        volumes:
+            - ms-user-db-data:/var/lib/mysql
+        healthcheck:
+            test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+            interval: 10s
+            timeout: 5s
+            retries: 10
+            start_period: 30s
+        restart: unless-stopped
+        networks:
+            - ms-network
+
+    minio:
+        image: coollabsio/minio:latest
+        env_file: 
+        - ./.env
+        container_name: ${MINIO_CONTAINER_NAME}
+        command: server /data --console-address ":${MINIO_CONSOLE_PORT}"
+        ports:
+            - 127.0.0.1:${MINIO_API_PORT}:${MINIO_API_PORT}
+            - 127.0.0.1:${MINIO_CONSOLE_PORT}:${MINIO_CONSOLE_PORT}
+        environment:
+            MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+            MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+        volumes:
+            - minio-data:/data
+        restart: unless-stopped
+        networks:
+            - ms-network
+
+    rabbitmq:
+        image: rabbitmq:4-management
+        env_file: ./.env
+        container_name: ${RABBITMQ_CONTAINER_NAME}
+        ports:
+            - 127.0.0.1:${RABBITMQ_AMQP_PORT}:${RABBITMQ_AMQP_PORT}
+            - 127.0.0.1:${RABBITMQ_MANAGEMENT_PORT}:${RABBITMQ_MANAGEMENT_PORT}
+        environment:
+            RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME}
+            RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+        volumes:
+            - rabbitmq-data:/var/lib/rabbitmq
+        healthcheck:
+            test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+            interval: 10s
+            timeout: 5s
+            retries: 10
+            start_period: 20s
+        restart: unless-stopped
+        networks:
+            - ms-network
+
+    prometheus:
+        image: prom/prometheus:latest
+        env_file: ./.env
+        container_name: ${PROMETHEUS_CONTAINER_NAME}
+        ports:
+          - 127.0.0.1:${PROMETHEUS_PORT}:${PROMETHEUS_PORT}
+        volumes:
+          - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+          - prometheus-data:/prometheus
+        restart: unless-stopped
+        networks:
+          - ms-network
+
+networks:
+    ms-network:
+        driver: bridge
+        
+volumes:
+    prometheus-data:
+    rabbitmq-data:
+    minio-data:
+    ms-user-db-data:
